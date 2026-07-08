@@ -44,7 +44,7 @@ app.add_middleware(
 lock = threading.Lock()
 
 orders: dict[str, dict] = {}
-order_ids: list[str] = []  # insertion order, doubles as the pagination sequence
+catalog_ids: list[str] = []  # fixed pagination sequence
 next_id_counter = TOTAL_ORDERS + 1
 
 idempotency_store: dict[str, str] = {}  # Idempotency-Key -> order id
@@ -53,7 +53,13 @@ rate_buckets: dict[str, deque] = defaultdict(deque)  # client id -> timestamps
 
 
 def seed_catalog() -> None:
-    """Pre-populate the fixed catalog of orders 1..T."""
+    """Pre-populate the fixed catalog of orders 1..T.
+
+    Pagination (GET /orders) only ever walks catalog_ids, which is frozen
+    after seeding. Orders created later via POST /orders are stored in
+    `orders` (individually fetchable, idempotency-tracked) but are
+    deliberately NOT appended to catalog_ids, so a full paginated scan
+    always yields exactly T=54 orders no matter how many POSTs happen."""
     for i in range(1, TOTAL_ORDERS + 1):
         oid = str(i)
         orders[oid] = {
@@ -62,7 +68,7 @@ def seed_catalog() -> None:
             "amount": round(9.99 + i, 2),
             "status": "created",
         }
-        order_ids.append(oid)
+        catalog_ids.append(oid)
 
 
 seed_catalog()
@@ -132,7 +138,7 @@ async def create_order(
             "status": "created",
         }
         orders[oid] = order
-        order_ids.append(oid)
+        # Intentionally NOT appended to catalog_ids -- see seed_catalog() docstring.
         if idempotency_key:
             idempotency_store[idempotency_key] = oid
 
@@ -160,7 +166,7 @@ async def list_orders(
     cursor: Optional[str] = None,
 ):
     with lock:
-        snapshot = list(order_ids)
+        snapshot = list(catalog_ids)
 
     start = decode_cursor(cursor) if cursor else 0
     if start > len(snapshot):
